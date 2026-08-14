@@ -1,0 +1,13 @@
+{
+  "name": "sperm-swim-relay",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Минимальный relay/лобби-сервер для мультиплеера не по одной сети",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  }
+}
