@@ -124,6 +124,10 @@ wss.on('connection', (ws) => {
 				leaveRoom(ws);
 				break;
 			}
+			case 'ping': {
+	// Просто держим соединение живым, отвечать не обязательно.
+				break;
+			}
 		}
 	});
 
