@@ -4,10 +4,9 @@ import { randomUUID } from 'crypto';
 const PORT = process.env.PORT || 8080;
 const wss = new WebSocketServer({ port: PORT });
 
-// Без похожих символов (0/O, 1/I), чтобы код было легко продиктовать/ввести.
 const CODE_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 
-// code -> { hostId, players: Map(playerId -> { ws, name }), map }
+// code -> { hostId, players: Map(playerId -> { ws, name }), map, bannedIds: Set, gameStarted: bool }
 const rooms = new Map();
 
 function makeCode() {
@@ -60,7 +59,13 @@ wss.on('connection', (ws) => {
 		switch (msg.type) {
 			case 'create_room': {
 				const code = makeCode();
-				const room = { hostId: playerId, players: new Map(), map: null };
+				const room = {
+					hostId: playerId,
+					players: new Map(),
+					map: null,
+					bannedIds: new Set(),
+					gameStarted: false,
+				};
 				room.players.set(playerId, { ws, name: msg.name || 'Player' });
 				rooms.set(code, room);
 				ws.roomCode = code;
@@ -78,6 +83,16 @@ wss.on('connection', (ws) => {
 					return;
 				}
 
+				if (room.bannedIds.has(playerId)) {
+					send(ws, { type: 'join_rejected', reason: 'Вы забанены в этом лобби' });
+					return;
+				}
+
+				if (room.gameStarted) {
+					send(ws, { type: 'join_rejected', reason: 'Игра уже началась, дождитесь конца' });
+					return;
+				}
+
 				room.players.set(playerId, { ws, name: msg.name || 'Player' });
 				ws.roomCode = code;
 
@@ -89,7 +104,7 @@ wss.on('connection', (ws) => {
 
 			case 'select_map': {
 				const room = rooms.get(ws.roomCode);
-				if (!room || room.hostId !== playerId) return; // только хост выбирает карту
+				if (!room || room.hostId !== playerId) return;
 				room.map = msg.map;
 				broadcastRoom(room, { type: 'map_selected', map: room.map });
 				break;
@@ -97,10 +112,10 @@ wss.on('connection', (ws) => {
 
 			case 'start_game': {
 				const room = rooms.get(ws.roomCode);
-				if (!room || room.hostId !== playerId) return; // только хост стартует
+				if (!room || room.hostId !== playerId) return;
 
-				// Порядок игроков здесь и определяет, кому какая точка спавна
-				// достанется на клиенте (spawn_index = позиция в этом массиве).
+				room.gameStarted = true;
+
 				const orderedIds = [...room.players.keys()];
 
 				broadcastRoom(room, {
@@ -111,9 +126,45 @@ wss.on('connection', (ws) => {
 				break;
 			}
 
+			case 'kick': {
+				const room = rooms.get(ws.roomCode);
+				if (!room || room.hostId !== playerId) return; // только хост кикает
+				const targetId = msg.player_id;
+				if (!targetId || targetId === playerId) return; // нельзя кикнуть себя
+
+				const target = room.players.get(targetId);
+				if (!target) return;
+
+				send(target.ws, { type: 'kicked', reason: 'Вас кикнул хост' });
+				room.players.delete(targetId);
+				target.ws.roomCode = null;
+				target.ws.close();
+
+				broadcastRoom(room, playerListPayload(room));
+				break;
+			}
+
+			case 'ban': {
+				const room = rooms.get(ws.roomCode);
+				if (!room || room.hostId !== playerId) return; // только хост банит
+				const targetId = msg.player_id;
+				if (!targetId || targetId === playerId) return; // нельзя забанить себя
+
+				const target = room.players.get(targetId);
+				if (!target) return;
+
+				room.bannedIds.add(targetId);
+
+				send(target.ws, { type: 'banned', reason: 'Вас забанил хост в этом лобби' });
+				room.players.delete(targetId);
+				target.ws.roomCode = null;
+				target.ws.close();
+
+				broadcastRoom(room, playerListPayload(room));
+				break;
+			}
+
 			case 'relay': {
-				// Пригодится позже для синхронизации геймплея (позиция, повороты
-				// и т.д.) — просто пересылаем данные всем остальным в комнате.
 				const room = rooms.get(ws.roomCode);
 				if (!room) return;
 				broadcastRoom(room, { type: 'relay', from: playerId, data: msg.data }, playerId);
@@ -125,7 +176,6 @@ wss.on('connection', (ws) => {
 				break;
 			}
 			case 'ping': {
-	// Просто держим соединение живым, отвечать не обязательно.
 				break;
 			}
 		}
@@ -148,7 +198,6 @@ function leaveRoom(ws) {
 	}
 
 	if (room.hostId === ws.playerId) {
-		// Хост вышел — передаём хост первому оставшемуся игроку.
 		room.hostId = [...room.players.keys()][0];
 	}
 
