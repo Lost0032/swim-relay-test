@@ -83,9 +83,9 @@ wss.on('connection', (ws) => {
 					return;
 				}
 			
-				console.log(`JOIN ATTEMPT: id=${playerId} ip=${ip} bannedIds=${[...room.bannedIds]} bannedIps=${[...room.bannedIps]}`);
+				console.log(`JOIN ATTEMPT: id=${playerId} ip=${ws.ip} bannedIds=${[...room.bannedIds]} bannedIps=${[...room.bannedIps]}`);
 			
-				if (room.bannedIds.has(playerId) || room.bannedIps.has(ip)) {
+				if (room.bannedIds.has(playerId) || room.bannedIps.has(ws.ip)) {
 					send(ws, { type: 'join_rejected', reason: 'Вы забанены в этом лобби' });
 					return;
 				}
