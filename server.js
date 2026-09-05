@@ -74,7 +74,7 @@ wss.on('connection', (ws) => {
 				send(ws, playerListPayload(room));
 				break;
 			}
-
+			
 			case 'join_room': {
 				const code = (msg.code || '').toUpperCase();
 				const room = rooms.get(code);
@@ -82,20 +82,22 @@ wss.on('connection', (ws) => {
 					send(ws, { type: 'error', message: 'Лобби с таким кодом не найдено' });
 					return;
 				}
-
-				if (room.bannedIds.has(playerId)) {
+			
+				console.log(`JOIN ATTEMPT: id=${playerId} ip=${ip} bannedIds=${[...room.bannedIds]} bannedIps=${[...room.bannedIps]}`);
+			
+				if (room.bannedIds.has(playerId) || room.bannedIps.has(ip)) {
 					send(ws, { type: 'join_rejected', reason: 'Вы забанены в этом лобби' });
 					return;
 				}
-
+			
 				if (room.gameStarted) {
 					send(ws, { type: 'join_rejected', reason: 'Игра уже началась, дождитесь конца' });
 					return;
 				}
-
+			
 				room.players.set(playerId, { ws, name: msg.name || 'Player' });
 				ws.roomCode = code;
-
+			
 				send(ws, { type: 'room_joined', code, player_id: playerId, is_host: false });
 				if (room.map) send(ws, { type: 'map_selected', map: room.map });
 				broadcastRoom(room, playerListPayload(room));
@@ -146,21 +148,22 @@ wss.on('connection', (ws) => {
 
 			case 'ban': {
 				const room = rooms.get(ws.roomCode);
-				if (!room || room.hostId !== playerId) return; // только хост банит
+				if (!room || room.hostId !== playerId) return;
 				const targetId = msg.player_id;
-				if (!targetId || targetId === playerId) return; // нельзя забанить себя
-
+				if (!targetId || targetId === playerId) return;
+			
 				const target = room.players.get(targetId);
 				if (!target) return;
-
+			
+				console.log(`BAN: id=${targetId} ip=${target.ws.ip}`);
 				room.bannedIds.add(targetId);
-
-				send(target.ws, { type: 'banned', reason: 'Вас забанил хост в этом лобби' });
+				room.bannedIps.add(target.ws.ip);
+			
 				room.players.delete(targetId);
 				target.ws.roomCode = null;
-				target.ws.close();
-
 				broadcastRoom(room, playerListPayload(room));
+			
+				disconnectPlayer(target.ws, { type: 'banned', reason: 'Вас забанил хост в этом лобби' });
 				break;
 			}
 
