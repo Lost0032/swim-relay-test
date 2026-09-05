@@ -6,7 +6,7 @@ const wss = new WebSocketServer({ port: PORT });
 
 const CODE_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 
-// code -> { hostId, players: Map(playerId -> { ws, name }), map, bannedIds: Set, gameStarted: bool }
+// code -> { hostId, players: Map(playerId -> { ws, name }), map, bannedIds: Set, bannedIps: Set, gameStarted: bool }
 const rooms = new Map();
 
 function makeCode() {
@@ -43,10 +43,20 @@ function playerListPayload(room) {
 	};
 }
 
-wss.on('connection', (ws) => {
+// Шлёт сообщение и закрывает соединение чуть позже, чтобы клиент успел
+// получить текст причины (kicked/banned) до разрыва сокета.
+function disconnectPlayer(ws, payload) {
+	send(ws, payload);
+	setTimeout(() => {
+		try { ws.close(); } catch {}
+	}, 100);
+}
+
+wss.on('connection', (ws, req) => {
 	const playerId = randomUUID();
 	ws.playerId = playerId;
 	ws.roomCode = null;
+	ws.ip = req.socket.remoteAddress;
 
 	ws.on('message', (raw) => {
 		let msg;
@@ -64,6 +74,7 @@ wss.on('connection', (ws) => {
 					players: new Map(),
 					map: null,
 					bannedIds: new Set(),
+					bannedIps: new Set(),
 					gameStarted: false,
 				};
 				room.players.set(playerId, { ws, name: msg.name || 'Player' });
@@ -74,7 +85,7 @@ wss.on('connection', (ws) => {
 				send(ws, playerListPayload(room));
 				break;
 			}
-			
+
 			case 'join_room': {
 				const code = (msg.code || '').toUpperCase();
 				const room = rooms.get(code);
@@ -82,22 +93,22 @@ wss.on('connection', (ws) => {
 					send(ws, { type: 'error', message: 'Лобби с таким кодом не найдено' });
 					return;
 				}
-			
+
 				console.log(`JOIN ATTEMPT: id=${playerId} ip=${ws.ip} bannedIds=${[...room.bannedIds]} bannedIps=${[...room.bannedIps]}`);
-			
+
 				if (room.bannedIds.has(playerId) || room.bannedIps.has(ws.ip)) {
 					send(ws, { type: 'join_rejected', reason: 'Вы забанены в этом лобби' });
 					return;
 				}
-			
+
 				if (room.gameStarted) {
 					send(ws, { type: 'join_rejected', reason: 'Игра уже началась, дождитесь конца' });
 					return;
 				}
-			
+
 				room.players.set(playerId, { ws, name: msg.name || 'Player' });
 				ws.roomCode = code;
-			
+
 				send(ws, { type: 'room_joined', code, player_id: playerId, is_host: false });
 				if (room.map) send(ws, { type: 'map_selected', map: room.map });
 				broadcastRoom(room, playerListPayload(room));
@@ -117,7 +128,6 @@ wss.on('connection', (ws) => {
 				if (!room || room.hostId !== playerId) return;
 
 				room.gameStarted = true;
-
 				const orderedIds = [...room.players.keys()];
 
 				broadcastRoom(room, {
@@ -130,19 +140,18 @@ wss.on('connection', (ws) => {
 
 			case 'kick': {
 				const room = rooms.get(ws.roomCode);
-				if (!room || room.hostId !== playerId) return; // только хост кикает
+				if (!room || room.hostId !== playerId) return;
 				const targetId = msg.player_id;
-				if (!targetId || targetId === playerId) return; // нельзя кикнуть себя
+				if (!targetId || targetId === playerId) return;
 
 				const target = room.players.get(targetId);
 				if (!target) return;
 
-				send(target.ws, { type: 'kicked', reason: 'Вас кикнул хост' });
 				room.players.delete(targetId);
 				target.ws.roomCode = null;
-				target.ws.close();
-
 				broadcastRoom(room, playerListPayload(room));
+
+				disconnectPlayer(target.ws, { type: 'kicked', reason: 'Вас кикнул хост' });
 				break;
 			}
 
@@ -151,18 +160,18 @@ wss.on('connection', (ws) => {
 				if (!room || room.hostId !== playerId) return;
 				const targetId = msg.player_id;
 				if (!targetId || targetId === playerId) return;
-			
+
 				const target = room.players.get(targetId);
 				if (!target) return;
-			
+
 				console.log(`BAN: id=${targetId} ip=${target.ws.ip}`);
 				room.bannedIds.add(targetId);
 				room.bannedIps.add(target.ws.ip);
-			
+
 				room.players.delete(targetId);
 				target.ws.roomCode = null;
 				broadcastRoom(room, playerListPayload(room));
-			
+
 				disconnectPlayer(target.ws, { type: 'banned', reason: 'Вас забанил хост в этом лобби' });
 				break;
 			}
