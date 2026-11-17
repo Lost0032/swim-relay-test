@@ -64,21 +64,54 @@ function cleanMap(v) {
 	return typeof v === 'string' && /^[A-Za-z0-9_-]{1,40}$/.test(v) ? v : null;
 }
 
-function cleanList(v, maxItems, maxLen) {
+function cleanNum01(v) {
+	const n = Number(v);
+	return Number.isFinite(n) ? Math.min(Math.max(n, 0), 1) : 0;
+}
+
+// Словарь "имя части -> число 0..1" (оттенки/насыщенность скина оружия). Null-прототип и лимиты — от мусора.
+function cleanNumMap(m, maxKeys) {
+	const out = Object.create(null);
+	if (!m || typeof m !== 'object') return out;
+	for (const [k, v] of Object.entries(m).slice(0, maxKeys)) {
+		const key = cleanStr(k, 48);
+		if (key) out[key] = cleanNum01(v);
+	}
+	return out;
+}
+
+// Скин оружия (только перекраска): { n: имя, r: редкость, h: {часть: оттенок}, s: {часть: насыщенность} }.
+// Скины с пользовательской текстурой не передаются (файл есть только у владельца) — клиент шлёт null.
+function cleanWeaponSkin(sk) {
+	if (!sk || typeof sk !== 'object') return null;
+	const h = cleanNumMap(sk.h, 12);
+	if (Object.keys(h).length === 0) return null;
+	return { n: cleanStr(sk.n, 40), r: cleanStr(sk.r, 32), h, s: cleanNumMap(sk.s, 12) };
+}
+
+// Запись об оружии: { id, slot, skin }.
+function cleanWeaponEntries(v, maxItems) {
 	if (!Array.isArray(v)) return [];
-	return v.slice(0, maxItems).map((x) => cleanStr(x, maxLen)).filter(Boolean);
+	const out = [];
+	for (const e of v.slice(0, maxItems)) {
+		if (!e || typeof e !== 'object') continue;
+		const id = cleanStr(e.id, 64);
+		if (!id) continue;
+		out.push({ id, slot: cleanStr(e.slot, 16), skin: cleanWeaponSkin(e.skin) });
+	}
+	return out;
 }
 
 // Профиль игрока: то, что другие видят в лобби. Клиент присылает его при входе и при смене экипировки.
-// Лёгкие поля (level, skin, weapons) уходят всем в player_list; инвентарь отдаётся по запросу get_inventory.
+// Лёгкие поля (level, skin, weapons) уходят всем в player_list; инвентарь (все оружия игрока) — по запросу get_inventory.
 function cleanProfile(p) {
 	p = p && typeof p === 'object' ? p : {};
 	const level = Math.min(Math.max(Math.floor(Number(p.level)) || 1, 1), 999);
 	return {
 		level,
 		skin: cleanStr(p.skin, 64),
-		weapons: cleanList(p.weapons, 8, 64),
-		inventory: cleanList(p.inventory, 300, 64),
+		weapons: cleanWeaponEntries(p.weapons, 8),
+		inventory: cleanWeaponEntries(p.inventory, 100),
 	};
 }
 
